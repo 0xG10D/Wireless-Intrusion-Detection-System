@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -25,24 +26,14 @@ ALERT_HEADERS = [
 
 TRAFFIC_HEADERS = [
     "timestamp",
-    "interface",
-    "channel",
     "frame_type",
     "frame_subtype",
-    "protocol",
-    "src_mac",
-    "dst_mac",
     "bssid",
-    "transmitter",
-    "receiver",
-    "src_ip",
-    "dst_ip",
     "essid",
-    "security",
-    "signal_dbm",
-    "length",
     "source",
     "destination",
+    "channel",
+    "rssi",
 ]
 
 
@@ -60,6 +51,7 @@ class MonitorLogger:
 
     def _ensure_storage(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._apply_permissions(self.data_dir, is_dir=True)
         self._ensure_csv(self.alerts_csv_file, ALERT_HEADERS)
         self._ensure_csv(self.traffic_file, TRAFFIC_HEADERS)
         self._ensure_json(self.alerts_json_file, [])
@@ -80,11 +72,16 @@ class MonitorLogger:
         return {
             "running": False,
             "mode": "live",
+            "pid": None,
+            "requested_interface": "",
             "interface": "not-started",
+            "interface_mode": "",
+            "interface_resolution": "",
             "channel_lock": "",
             "current_channel": "",
             "target_bssid": "",
             "target_essid": "",
+            "session_started_at": "",
             "last_update": "",
             "packet_count": 0,
             "alert_count": 0,
@@ -103,6 +100,8 @@ class MonitorLogger:
                 "beacon": 0,
                 "probe": 0,
             },
+            "advisories": [],
+            "troubleshooting": [],
             "message": "Dashboard ready. Start live monitoring with main.py.",
             "error": "",
         }
@@ -112,10 +111,6 @@ class MonitorLogger:
         return {
             "access_points": [],
             "clients": [],
-            "summary": {
-                "access_point_count": 0,
-                "client_count": 0,
-            },
         }
 
     def append_alert(self, alert: dict[str, Any]) -> None:
@@ -149,22 +144,20 @@ class MonitorLogger:
         }
         self._append_json_item(self.activity_file, entry, max_items=500)
 
-    @staticmethod
-    def _ensure_csv(path: Path, headers: list[str]) -> None:
+    def _ensure_csv(self, path: Path, headers: list[str]) -> None:
         if path.exists() and path.stat().st_size > 0:
+            self._apply_permissions(path)
             return
+        self._rewrite_csv(path, headers)
+
+    def _rewrite_csv(self, path: Path, headers: list[str]) -> None:
         with path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=headers)
             writer.writeheader()
+        self._apply_permissions(path)
 
-    @staticmethod
-    def _rewrite_csv(path: Path, headers: list[str]) -> None:
-        with path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=headers)
-            writer.writeheader()
-
-    @staticmethod
     def _append_csv_row(
+        self,
         path: Path,
         headers: list[str],
         row: dict[str, Any],
@@ -176,9 +169,11 @@ class MonitorLogger:
             if write_header:
                 writer.writeheader()
             writer.writerow(cleaned)
+        self._apply_permissions(path)
 
     def _ensure_json(self, path: Path, default_payload: Any) -> None:
         if path.exists():
+            self._apply_permissions(path)
             return
         self._write_json_atomic(path, default_payload)
 
@@ -206,9 +201,28 @@ class MonitorLogger:
             payload = payload[-max_items:]
         self._write_json_atomic(path, payload)
 
-    @staticmethod
-    def _write_json_atomic(path: Path, payload: Any) -> None:
+    def _write_json_atomic(self, path: Path, payload: Any) -> None:
         temp_file = path.with_suffix(path.suffix + ".tmp")
         with temp_file.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
         temp_file.replace(path)
+        self._apply_permissions(path)
+
+    def _apply_permissions(self, path: Path, is_dir: bool = False) -> None:
+        try:
+            mode = 0o775 if is_dir else 0o664
+            os.chmod(path, mode)
+        except OSError:
+            pass
+
+        sudo_uid = os.environ.get("SUDO_UID")
+        sudo_gid = os.environ.get("SUDO_GID")
+        if sudo_uid is None or sudo_gid is None:
+            return
+        if not hasattr(os, "chown"):
+            return
+
+        try:
+            os.chown(path, int(sudo_uid), int(sudo_gid))
+        except (OSError, ValueError):
+            pass

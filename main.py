@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,10 @@ from src.packet_capture import (
     PacketCaptureMonitorModeError,
     PacketCapturePermissionError,
 )
+from src.session_manager import SessionLockError, SessionManager
+
+
+NO_PACKET_WARNING_SECONDS = 15
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,9 +58,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds between status and inventory flushes to data/status.json.",
     )
     parser.add_argument(
-        "--reset-logs",
+        "--reset-session",
+        dest="reset_session",
         action="store_true",
-        help="Clear persisted alerts, traffic logs, inventory, and status before monitoring.",
+        help="Archive the current data/ folder and start with a clean session state.",
+    )
+    parser.add_argument(
+        "--reset-logs",
+        dest="reset_session",
+        action="store_true",
+        help="Alias for --reset-session.",
     )
     return parser
 
@@ -75,10 +87,23 @@ def run_monitor(args: argparse.Namespace) -> int:
 
     base_dir = Path(__file__).resolve().parent
     data_dir = base_dir / "data"
+    archive_dir = base_dir / "archive"
     config_path = resolve_path(base_dir, args.config)
 
+    session_manager = SessionManager(base_dir=base_dir, data_dir=data_dir, archive_dir=archive_dir)
+
+    try:
+        session_manager.acquire()
+    except SessionLockError as exc:
+        print(str(exc), file=sys.stderr, flush=True)
+        return 1
+
+    archive_path: Path | None = None
+    if args.reset_session:
+        archive_path = session_manager.archive_data_dir()
+
     logger = MonitorLogger(data_dir)
-    if args.reset_logs:
+    if args.reset_session:
         logger.reset_runtime_outputs()
 
     thresholds = load_threshold_config(config_path)
@@ -90,14 +115,39 @@ def run_monitor(args: argparse.Namespace) -> int:
         essid=args.essid,
     )
 
-    current_message = "Validating monitor-mode interface."
+    current_message = "Validating capture interface."
     current_error = ""
     exit_code = 0
-    status_started = False
+    session_running = False
     last_flush = 0.0
+    session_started_at_iso = ""
+    capture_started_at = 0.0
+    no_packet_warning_logged = False
+    stop_reason = ""
+    stop_reason_logged = False
+
+    def log_once(message: str, level: str = "INFO") -> None:
+        logger.append_activity(message, level=level)
+        print(message, flush=True)
+
+    def handle_stop_signal(message: str) -> None:
+        nonlocal current_message, stop_reason
+        current_message = message
+        stop_reason = message
+        print(message, flush=True)
+
+    def handle_suspend_signal(message: str) -> None:
+        nonlocal current_message
+        current_message = message
+        log_once(message, level="WARN")
+
+    session_manager.install_signal_handlers(
+        on_stop=handle_stop_signal,
+        on_suspend=handle_suspend_signal,
+    )
 
     def flush_runtime_state(force: bool = False) -> None:
-        nonlocal last_flush
+        nonlocal last_flush, no_packet_warning_logged, current_message, stop_reason_logged
 
         now = time.monotonic()
         if not force and now - last_flush < args.status_interval:
@@ -105,14 +155,41 @@ def run_monitor(args: argparse.Namespace) -> int:
 
         snapshot = detector.get_status_snapshot()
         logger.save_devices(detector.export_devices())
+
+        troubleshooting: list[str] = []
+        if session_running and snapshot["packet_count"] == 0 and capture_started_at:
+            if now - capture_started_at >= NO_PACKET_WARNING_SECONDS:
+                warning = "No packets captured. Check monitor mode, channel, or driver."
+                troubleshooting = [
+                    warning,
+                    f"Confirm the active capture interface is {capture.interface}.",
+                    "Verify the adapter is in monitor mode and locked to the expected channel.",
+                ]
+                if not no_packet_warning_logged:
+                    logger.append_activity(warning, level="WARN")
+                    no_packet_warning_logged = True
+                if not current_error and not stop_reason:
+                    current_message = warning
+        else:
+            no_packet_warning_logged = False
+
+        if stop_reason and not stop_reason_logged:
+            logger.append_activity(stop_reason, level="WARN")
+            stop_reason_logged = True
+
         logger.update_status(
-            running=status_started,
+            running=session_running,
             mode="live",
-            interface=args.interface,
+            pid=session_manager.pid,
+            requested_interface=args.interface,
+            interface=capture.interface or args.interface,
+            interface_mode=capture.interface_mode,
+            interface_resolution=capture.interface_resolution,
             channel_lock=str(args.channel or ""),
             current_channel=capture.current_channel or snapshot["current_channel"],
             target_bssid=args.bssid.strip().upper(),
             target_essid=args.essid.strip(),
+            session_started_at=session_started_at_iso,
             packet_count=snapshot["packet_count"],
             alert_count=snapshot["alert_count"],
             ap_count=snapshot["ap_count"],
@@ -120,6 +197,8 @@ def run_monitor(args: argparse.Namespace) -> int:
             severity_counts=snapshot["severity_counts"],
             attack_counts=snapshot["attack_counts"],
             frame_counters=snapshot["frame_counters"],
+            advisories=snapshot["advisories"],
+            troubleshooting=troubleshooting,
             last_update=datetime.now().astimezone().isoformat(timespec="seconds"),
             message=current_message,
             error=current_error,
@@ -135,7 +214,7 @@ def run_monitor(args: argparse.Namespace) -> int:
             latest_alert = alerts[-1]
             current_message = (
                 f"{latest_alert['severity']} {latest_alert['attack_type']} detected on "
-                f"{latest_alert.get('essid') or latest_alert.get('bssid') or args.interface}."
+                f"{latest_alert.get('essid') or latest_alert.get('bssid') or capture.interface}."
             )
             for alert in alerts:
                 logger.append_alert(alert)
@@ -143,26 +222,45 @@ def run_monitor(args: argparse.Namespace) -> int:
                     f"{alert['attack_type']}: {alert['details']}",
                     level=str(alert["severity"]),
                 )
+        elif detector.packet_count == 1:
+            current_message = f"Live monitoring active on {capture.interface}."
 
         flush_runtime_state()
 
-    logger.append_activity(f"Loading thresholds from {config_path}.")
-    flush_runtime_state(force=True)
-
     try:
+        if archive_path is not None:
+            logger.append_activity(f"Archived previous session data to {archive_path}.")
+
+        logger.append_activity(f"Loading thresholds from {config_path}.")
+        flush_runtime_state(force=True)
+
         capture.validate_interface()
-        current_message = f"Live monitoring active on {args.interface}."
+        if capture.interface_resolution:
+            logger.append_activity(capture.interface_resolution, level="WARN")
+
+        session_started_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+        capture_started_at = time.monotonic()
+        session_running = True
+        current_message = f"Live monitoring active on {capture.interface}."
         if args.channel:
             current_message = (
-                f"Live monitoring active on {args.interface} with channel lock {args.channel}."
+                f"Live monitoring active on {capture.interface} with channel lock {args.channel}."
             )
-        status_started = True
         logger.append_activity(current_message)
         flush_runtime_state(force=True)
-        capture.sniff_live(handle_packet)
+
+        capture.sniff_live(
+            packet_callback=handle_packet,
+            should_stop=lambda: session_manager.stop_requested,
+        )
+
+        if stop_reason:
+            current_message = stop_reason
+        elif not current_error:
+            current_message = "Monitoring stopped."
+
     except KeyboardInterrupt:
-        current_message = "Monitoring stopped by the operator."
-        logger.append_activity(current_message, level="WARN")
+        current_message = stop_reason or "Monitoring stopped by the operator."
     except (
         PacketCapturePermissionError,
         PacketCaptureInterfaceError,
@@ -175,9 +273,17 @@ def run_monitor(args: argparse.Namespace) -> int:
         current_message = "Monitoring stopped due to a capture or configuration error."
         exit_code = 1
         logger.append_activity(current_error, level="ERROR")
+        print(current_error, file=sys.stderr, flush=True)
+    except Exception as exc:  # pragma: no cover - safety net for runtime failures
+        current_error = f"Unexpected WIDS engine error: {exc}"
+        current_message = "Monitoring stopped due to an unexpected runtime error."
+        exit_code = 1
+        logger.append_activity(current_error, level="ERROR")
+        print(current_error, file=sys.stderr, flush=True)
     finally:
-        status_started = False
+        session_running = False
         flush_runtime_state(force=True)
+        session_manager.release()
 
     return exit_code
 

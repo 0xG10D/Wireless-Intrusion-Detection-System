@@ -27,7 +27,7 @@ DEFAULT_THRESHOLD_CONFIG: dict[str, dict[str, Any]] = {
         "severity": "HIGH",
     },
     "beacon_flood": {
-        "count": 80,
+        "count": 300,
         "unique_ssids": 12,
         "window_seconds": 10,
         "cooldown_seconds": 45,
@@ -120,6 +120,7 @@ class AttackDetector:
         self.rate_windows: dict[str, deque[float]] = defaultdict(deque)
         self.beacon_windows: dict[str, deque[tuple[float, str]]] = defaultdict(deque)
         self.last_alert_epoch: dict[str, float] = {}
+        self.advisories: dict[str, dict[str, Any]] = {}
 
         self.packet_count = 0
         self.alert_count = 0
@@ -138,6 +139,7 @@ class AttackDetector:
     def process_packet(self, packet: dict[str, Any]) -> list[dict[str, Any]]:
         self.packet_count += 1
         event_time = self._packet_epoch(str(packet.get("timestamp", "")))
+        self._expire_advisories(event_time)
 
         if packet.get("channel"):
             self.current_channel = str(packet["channel"])
@@ -147,33 +149,18 @@ class AttackDetector:
         self._observe_clients(packet)
 
         alerts: list[dict[str, Any]] = []
-        alert = self._detect_deauth_flood(packet, event_time)
-        if alert:
-            alerts.append(alert)
-
-        alert = self._detect_disassociation_flood(packet, event_time)
-        if alert:
-            alerts.append(alert)
-
-        alert = self._detect_beacon_flood(packet, event_time)
-        if alert:
-            alerts.append(alert)
-
-        alert = self._detect_probe_request_flood(packet, event_time)
-        if alert:
-            alerts.append(alert)
-
-        alert = self._detect_evil_twin(packet, event_time)
-        if alert:
-            alerts.append(alert)
-
-        alert = self._detect_open_network(packet, event_time)
-        if alert:
-            alerts.append(alert)
-
-        alert = self._detect_arp_spoofing(packet, event_time)
-        if alert:
-            alerts.append(alert)
+        for detector in (
+            self._detect_deauth_flood,
+            self._detect_disassociation_flood,
+            self._detect_beacon_flood,
+            self._detect_probe_request_flood,
+            self._detect_evil_twin,
+            self._detect_open_network,
+            self._detect_arp_spoofing,
+        ):
+            alert = detector(packet, event_time)
+            if alert:
+                alerts.append(alert)
 
         for alert in alerts:
             self.alert_count += 1
@@ -199,10 +186,10 @@ class AttackDetector:
                     "security": record["security"],
                     "first_seen": record["first_seen"],
                     "last_seen": record["last_seen"],
-                    "packet_count": record["packet_count"],
+                    "frame_count": record["frame_count"],
                     "beacon_count": record["beacon_count"],
                     "client_count": client_counts.get(record["bssid"], 0),
-                    "last_signal_dbm": record["last_signal_dbm"],
+                    "rssi": record["rssi"],
                 }
             )
 
@@ -219,7 +206,7 @@ class AttackDetector:
                     "probe_request_count": record["probe_request_count"],
                     "probe_essids": sorted(record["probe_essids"]),
                     "src_ips": sorted(record["src_ips"]),
-                    "last_signal_dbm": record["last_signal_dbm"],
+                    "rssi": record["rssi"],
                 }
             )
 
@@ -229,19 +216,14 @@ class AttackDetector:
         return {
             "access_points": access_points,
             "clients": clients,
-            "summary": {
-                "access_point_count": len(access_points),
-                "client_count": len(clients),
-            },
         }
 
     def get_status_snapshot(self) -> dict[str, Any]:
-        inventory = self.export_devices()
         return {
             "packet_count": self.packet_count,
             "alert_count": self.alert_count,
-            "ap_count": inventory["summary"]["access_point_count"],
-            "client_count": inventory["summary"]["client_count"],
+            "ap_count": len(self.access_points),
+            "client_count": len(self.clients),
             "current_channel": self.current_channel,
             "frame_counters": {
                 "deauth": self.frame_counters["deauth"],
@@ -254,6 +236,17 @@ class AttackDetector:
                 for severity in SEVERITY_LEVELS
             },
             "attack_counts": dict(self.attack_counts),
+            "advisories": [
+                {
+                    "severity": value["severity"],
+                    "message": value["message"],
+                }
+                for _, value in sorted(
+                    self.advisories.items(),
+                    key=lambda item: item[1]["last_seen_epoch"],
+                    reverse=True,
+                )
+            ],
         }
 
     def _observe_access_point(self, packet: dict[str, Any]) -> None:
@@ -275,22 +268,22 @@ class AttackDetector:
                 "security": security,
                 "first_seen": timestamp,
                 "last_seen": timestamp,
-                "packet_count": 0,
+                "frame_count": 0,
                 "beacon_count": 0,
-                "last_signal_dbm": packet.get("signal_dbm", ""),
+                "rssi": packet.get("rssi", ""),
             },
         )
 
         record["last_seen"] = timestamp
-        record["packet_count"] += 1
+        record["frame_count"] += 1
         if essid:
             record["essid"] = essid
         if channel:
             record["channel"] = channel
         if security:
             record["security"] = security
-        if packet.get("signal_dbm", "") != "":
-            record["last_signal_dbm"] = packet.get("signal_dbm", "")
+        if packet.get("rssi", "") != "":
+            record["rssi"] = packet.get("rssi", "")
         if packet.get("frame_subtype") == "Beacon":
             record["beacon_count"] += 1
 
@@ -302,14 +295,14 @@ class AttackDetector:
 
     def _observe_clients(self, packet: dict[str, Any]) -> None:
         bssid = normalize_mac(str(packet.get("bssid", "")))
-        frame_type = str(packet.get("frame_type", "") or "")
+        frame_class = str(packet.get("frame_class", "") or "")
         frame_subtype = str(packet.get("frame_subtype", "") or "")
 
         source_client = normalize_mac(str(packet.get("src_mac", "")))
         if source_client and source_client != bssid and source_client != BROADCAST_MAC:
             self._observe_client(source_client, packet, bssid)
 
-        if frame_type in {"Management", "Data"} and frame_subtype not in {"Beacon", "Probe Response"}:
+        if frame_class in {"Management", "Data"} and frame_subtype not in {"Beacon", "Probe Response"}:
             destination_client = normalize_mac(str(packet.get("dst_mac", "")))
             if destination_client and destination_client != bssid and destination_client != BROADCAST_MAC:
                 self._observe_client(destination_client, packet, bssid)
@@ -333,7 +326,7 @@ class AttackDetector:
                 "probe_request_count": 0,
                 "probe_essids": set(),
                 "src_ips": set(),
-                "last_signal_dbm": packet.get("signal_dbm", ""),
+                "rssi": packet.get("rssi", ""),
             },
         )
 
@@ -349,8 +342,8 @@ class AttackDetector:
             record["probe_request_count"] += 1
             if packet.get("essid"):
                 record["probe_essids"].add(str(packet["essid"]))
-        if packet.get("signal_dbm", "") != "":
-            record["last_signal_dbm"] = packet.get("signal_dbm", "")
+        if packet.get("rssi", "") != "":
+            record["rssi"] = packet.get("rssi", "")
 
     def _update_frame_counters(self, packet: dict[str, Any]) -> None:
         subtype = str(packet.get("frame_subtype", "") or "")
@@ -447,7 +440,17 @@ class AttackDetector:
             str(packet.get("essid", "") or ""),
             int(config["window_seconds"]),
         )
-        if count < int(config["count"]) and unique_ssids < int(config["unique_ssids"]):
+
+        if count >= 80 and unique_ssids <= 1:
+            self._set_advisory(
+                key=f"{window_key}:normal-note",
+                message="Beacon flood alert may be normal if it comes from one SSID.",
+                event_time=event_time,
+                severity="LOW",
+                ttl_seconds=60,
+            )
+
+        if count < int(config["count"]) or unique_ssids < int(config["unique_ssids"]):
             return None
         if not self._should_emit(window_key, event_time, int(config["cooldown_seconds"])):
             return None
@@ -639,6 +642,30 @@ class AttackDetector:
             return False
         self.last_alert_epoch[key] = event_time
         return True
+
+    def _set_advisory(
+        self,
+        key: str,
+        message: str,
+        event_time: float,
+        severity: str = "LOW",
+        ttl_seconds: int = 60,
+    ) -> None:
+        self.advisories[key] = {
+            "severity": severity,
+            "message": message,
+            "last_seen_epoch": event_time,
+            "ttl_seconds": ttl_seconds,
+        }
+
+    def _expire_advisories(self, event_time: float) -> None:
+        expired_keys = [
+            key
+            for key, value in self.advisories.items()
+            if event_time - value["last_seen_epoch"] > value["ttl_seconds"]
+        ]
+        for key in expired_keys:
+            self.advisories.pop(key, None)
 
     def _build_alert(
         self,

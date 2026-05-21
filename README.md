@@ -1,20 +1,20 @@
-# Wireless Security Monitor
+# Wireless Intrusion Detection System
 
-This project is now a real-time, web UI focused wireless intrusion detection system for authorized lab use. The old desktop GUI, offline PCAP workflow, and demo mode have been removed. The monitor captures live 802.11 traffic from a real monitor-mode adapter, pushes every packet through one detection engine, and writes the dashboard data into `data/`.
+This repository is a defensive WIDS focused on real captured 802.11 traffic from a monitor-mode adapter. It does not include demo mode, PCAP replay mode, desktop GUI code, or any attack execution automation.
 
 ## What it does
 
 - Uses Scapy live sniffing with `store=False`.
-- Validates that the selected interface is already in monitor mode before capture starts.
-- Supports optional scope filters for `--bssid`, `--channel`, and `--essid`.
-- Detects:
+- Validates that the selected capture interface is really in monitor mode.
+- Detects when `airmon-ng` renamed the adapter and surfaces the real capture interface in the dashboard.
+- Uses one detection engine for:
   - Deauthentication flood
   - Disassociation flood
   - Beacon flood
   - Probe request flood
-  - Evil Twin suspicion based on duplicate SSID with conflicting security
-  - Open network exposure
-  - ARP spoofing where decoded from captured wireless data frames
+  - Evil Twin suspicion
+  - Open network detection
+  - ARP spoofing suspicion where the captured traffic allows it
 - Persists runtime telemetry to:
   - `data/alerts.csv`
   - `data/alerts.json`
@@ -23,33 +23,30 @@ This project is now a real-time, web UI focused wireless intrusion detection sys
   - `data/status.json`
   - `data/activity_logs.json`
 
-## Project structure
+## Recommended two-adapter setup
 
-- `main.py`
-  - Starts live monitoring only.
-  - Validates the monitor-mode interface.
-  - Loads the shared thresholds from `config/thresholds.json`.
-  - Streams packets into the unified detector and logger pipeline.
-- `src/packet_capture.py`
-  - Runs live Scapy sniffing.
-  - Applies optional channel lock on Linux.
-  - Normalizes live 802.11 packets into structured records.
-- `src/attack_detector.py`
-  - Maintains one detection engine for alerts, AP inventory, client inventory, and counters.
-- `src/logger.py`
-  - Persists alerts, traffic, device inventory, status, and activity logs to `data/`.
-- `web/app.py`
-  - Reads the generated files and serves the dashboard.
-- `web/templates/dashboard.html`
-  - Operator dashboard with auto-refresh and filter controls.
-- `config/thresholds.json`
-  - Single source of truth for alert thresholds and cooldowns.
+Use two wireless adapters in the lab:
+
+- Internal adapter: stay in managed mode for Internet access.
+  - Example: `wlp3s0`
+- External USB adapter: move to monitor mode for capture.
+  - Example hardware path: `wlx6c1ff7d85510`
+
+Real lab note:
+
+- `airmon-ng` can rename a long interface name when monitor mode starts.
+- Example:
+  - original adapter: `wlx6c1ff7d85510`
+  - active monitor interface after rename: `wlan0mon`
+
+The WIDS engine now reports the real capture interface so the dashboard matches the actual monitor device.
 
 ## Requirements
 
-- Linux lab host recommended. The interface validation and channel lock flow use `iw` or `iwconfig`.
-- A monitor-mode capable wireless adapter.
-- Root privileges or equivalent capture capabilities for Scapy.
+- Linux lab host
+- A monitor-mode capable USB Wi-Fi adapter
+- Root privileges or equivalent packet capture capabilities
+- `iw`, `iwconfig`, and Scapy available
 
 Install dependencies:
 
@@ -57,84 +54,85 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-## Prepare the interface
+## Prepare the monitor adapter
 
-Example on Kali or another Linux lab host:
+Exact example for the tested lab:
 
 ```bash
-sudo airmon-ng check kill
-sudo airmon-ng start wlan0
-iw dev wlan0mon info
+sudo airmon-ng start wlx6c1ff7d85510 4
 ```
 
-The monitor expects an interface such as `wlan0mon`. If the interface is not in monitor mode, `main.py` exits instead of falling back to any simulation path.
+That can create `wlan0mon` as the active monitor interface.
 
 ## Start live monitoring
 
-Example with channel lock and BSSID targeting:
+Exact example for the tested lab:
 
 ```bash
-sudo python3 main.py --interface wlan0mon --channel 4 --bssid FC:3F:FC:93:7F:B1
+sudo ../venv/bin/python3 -u main.py --interface wlan0mon --channel 4 --reset-session
 ```
 
-Example with ESSID targeting:
+Another example with a target BSSID:
 
 ```bash
-sudo python3 main.py --interface wlan0mon --essid Lab-Network
+sudo ../venv/bin/python3 -u main.py --interface wlan0mon --channel 4 --bssid FC:3F:FC:93:7F:B1
 ```
 
-Optional clean start:
-
-```bash
-sudo python3 main.py --interface wlan0mon --reset-logs
-```
-
-## Start the web dashboard
-
-Run the dashboard in a second terminal:
+## Start the dashboard
 
 ```bash
 python3 web/app.py
 ```
 
-Then open:
+Open:
 
 ```text
 http://127.0.0.1:5000
 ```
 
-The dashboard reads directly from the files in `data/` and shows:
+## Session behavior
 
-- Live alert feed
-- Threat severity count
-- Detected APs
-- Detected clients
-- Current interface
-- Current channel
-- Packet count
-- Deauth, disassoc, beacon, and probe statistics
-- Recent high severity alerts
-- Filters for severity, BSSID, ESSID, and attack type
+- `--reset-session`
+  - Archives the current `data/` folder into `archive/session_TIMESTAMP.tar.gz`
+  - Resets alerts, traffic logs, devices, status, and activity logs
+- `--reset-logs`
+  - Alias for `--reset-session`
+- A PID lock file prevents multiple WIDS engines from running at the same time
+- `CTRL+C` is the supported stop path
+- `CTRL+Z` is intentionally ignored with a warning so you do not leave stopped engine processes behind
 
-## Threshold tuning
+## Dashboard views
 
-Thresholds are centralized in `config/thresholds.json`.
+### Non-Technical View
 
-Example:
+- Safe / Warning / Critical summary
+- Plain-language explanations
+- Simple definitions for AP, client, packet, beacon, and deauth
+- Recommended next actions
 
-```json
-{
-  "deauth_flood": {
-    "count": 15,
-    "window_seconds": 10,
-    "cooldown_seconds": 30,
-    "severity": "CRITICAL"
-  }
-}
-```
+### Technical Analyst View
 
-Tune these values for your lab density, channel usage, and false-positive tolerance.
+- Real capture interface and channel
+- AP and client inventory
+- Alert feed with severity and MITRE mapping
+- Traffic logs table
+- Filters for severity, attack type, BSSID, ESSID, and channel
+- Export links for CSV and JSON artifacts
+
+## Notes on beacon flood tuning
+
+- Default beacon flood threshold is `300` beacons in `10` seconds
+- The detector now requires:
+  - `beacon_count >= threshold`
+  - `unique_ssids >= unique_ssids`
+- A single AP sending normal beacon traffic by itself should not trigger a HIGH beacon flood alert
+- The dashboard can still show a note that heavy beaconing from one SSID may be normal AP behavior
 
 ## Defensive scope
 
-This repository is detection-only. It does not contain attack execution helpers, deauth automation, or GUI-side simulation paths.
+This project is detection-only.
+
+- No deauth transmit automation
+- No `aireplay-ng` execution
+- No attack orchestration
+- Monitoring, logging, and visualization only

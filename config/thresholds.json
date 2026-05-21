@@ -12,7 +12,7 @@
     "severity": "HIGH"
   },
   "beacon_flood": {
-    "count": 80,
+    "count": 300,
     "unique_ssids": 12,
     "window_seconds": 10,
     "cooldown_seconds": 45,
