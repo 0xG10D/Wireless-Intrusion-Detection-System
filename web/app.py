@@ -23,6 +23,19 @@ DOWNLOADABLE_FILES = {
     "activity_logs.json",
 }
 
+BRANDING = {
+    "project_name": "WaveSentinel",
+    "full_title": "WaveSentinel: Real-Time 802.11 Wireless Intrusion Detection Dashboard",
+    "dashboard_title": "WaveSentinel Dashboard",
+    "dashboard_subtitle": "Real-Time 802.11 Wireless Threat Monitoring",
+    "tool_name": "WaveSentinel WIDS",
+    "description": (
+        "WaveSentinel provides real-time wireless monitoring for authorized lab and "
+        "defensive environments using monitor-mode packet capture, alert correlation, "
+        "and dashboard-based visibility."
+    ),
+}
+
 app = Flask(
     __name__,
     template_folder=str(WEB_DIR / "templates"),
@@ -65,7 +78,7 @@ def default_status() -> dict[str, Any]:
         "advisories": [],
         "troubleshooting": [],
         "last_update": "",
-        "message": "Dashboard ready. Start live monitoring with main.py.",
+        "message": "WaveSentinel Dashboard ready. Start live monitoring with main.py.",
         "error": "",
     }
 
@@ -538,7 +551,7 @@ def build_summary_view(
 
     if status["error"]:
         overall_level = "CRITICAL"
-        overall_message = "The WIDS engine hit an error and needs operator attention."
+        overall_message = "WaveSentinel hit an error and needs operator attention."
     elif critical_count:
         overall_level = "CRITICAL"
         overall_message = "High-risk wireless activity was detected in the monitored airspace."
@@ -718,6 +731,7 @@ def build_dashboard_payload(filters: dict[str, str]) -> dict[str, Any]:
     }
 
     payload = {
+        "branding": BRANDING,
         "status": status,
         "devices": {
             "access_points": filtered_access_points,

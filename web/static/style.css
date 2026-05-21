@@ -83,6 +83,14 @@ body {
     font-size: clamp(2rem, 4vw, 3.2rem);
 }
 
+.hero-subtitle {
+    margin: 12px 0 0;
+    color: var(--accent-strong);
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
 .hero-copy p:last-child {
     margin: 14px 0 0;
     max-width: 780px;

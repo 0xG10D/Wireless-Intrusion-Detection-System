@@ -1,52 +1,52 @@
-# Wireless Intrusion Detection System
+# WaveSentinel: Real-Time 802.11 Wireless Intrusion Detection Dashboard
 
-This repository is a defensive WIDS focused on real captured 802.11 traffic from a monitor-mode adapter. It does not include demo mode, PCAP replay mode, desktop GUI code, or any attack execution automation.
+Repository name: `wavesentinel-wids`
 
-## What it does
+WaveSentinel is a defensive wireless intrusion detection system for authorized lab environments. It captures real 802.11 traffic from a monitor-mode adapter, correlates alerts in one detection pipeline, and exposes live status through a web dashboard.
 
-- Uses Scapy live sniffing with `store=False`.
-- Validates that the selected capture interface is really in monitor mode.
-- Detects when `airmon-ng` renamed the adapter and surfaces the real capture interface in the dashboard.
-- Uses one detection engine for:
+## Features
+
+- Live Scapy sniffing with `store=False`
+- Monitor-mode validation before capture starts
+- Automatic handling of `airmon-ng` interface renames such as `wlx6c1ff7d85510` to `wlan0mon`
+- Real-time detection for:
   - Deauthentication flood
   - Disassociation flood
   - Beacon flood
   - Probe request flood
   - Evil Twin suspicion
   - Open network detection
-  - ARP spoofing suspicion where the captured traffic allows it
-- Persists runtime telemetry to:
+  - ARP spoofing suspicion where traffic supports it
+- Unified logging to:
   - `data/alerts.csv`
   - `data/alerts.json`
   - `data/traffic_logs.csv`
   - `data/devices.json`
   - `data/status.json`
   - `data/activity_logs.json`
+- Web dashboard with non-technical and analyst views
+- Defensive-only scope with no attack automation
 
-## Recommended two-adapter setup
+## Recommended Two-Adapter Setup
 
-Use two wireless adapters in the lab:
+Use one adapter for normal connectivity and one adapter for monitor-mode capture:
 
-- Internal adapter: stay in managed mode for Internet access.
-  - Example: `wlp3s0`
-- External USB adapter: move to monitor mode for capture.
-  - Example hardware path: `wlx6c1ff7d85510`
+- `wlp3s0` = managed Wi-Fi / Internet adapter
+- `wlx6c1ff7d85510` = USB adapter
+- `wlan0mon` = actual monitor interface created by `airmon-ng`
+- Channel `4` = lab channel
+- Lab AP: `G10D_Lab_Env-2.4GHz`
+- Lab BSSID: `FC:3F:FC:93:7F:B1`
 
-Real lab note:
-
-- `airmon-ng` can rename a long interface name when monitor mode starts.
-- Example:
-  - original adapter: `wlx6c1ff7d85510`
-  - active monitor interface after rename: `wlan0mon`
-
-The WIDS engine now reports the real capture interface so the dashboard matches the actual monitor device.
+WaveSentinel reports the real capture interface in `data/status.json` and in the dashboard so the UI matches the adapter Linux actually put into monitor mode.
 
 ## Requirements
 
 - Linux lab host
-- A monitor-mode capable USB Wi-Fi adapter
-- Root privileges or equivalent packet capture capabilities
-- `iw`, `iwconfig`, and Scapy available
+- Monitor-mode capable USB Wi-Fi adapter
+- Root privileges or equivalent capture capability
+- `iw`, `iwconfig`, and `airmon-ng`
+- Python dependencies from `requirements.txt`
 
 Install dependencies:
 
@@ -54,85 +54,70 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-## Prepare the monitor adapter
+## Usage
 
-Exact example for the tested lab:
+Start monitor mode on the USB adapter:
 
 ```bash
 sudo airmon-ng start wlx6c1ff7d85510 4
 ```
 
-That can create `wlan0mon` as the active monitor interface.
-
-## Start live monitoring
-
-Exact example for the tested lab:
+Start WaveSentinel live monitoring:
 
 ```bash
-sudo ../venv/bin/python3 -u main.py --interface wlan0mon --channel 4 --reset-session
+sudo ../venv/bin/python3 -u main.py \
+  --interface wlan0mon \
+  --channel 4 \
+  --reset-session
 ```
 
-Another example with a target BSSID:
-
-```bash
-sudo ../venv/bin/python3 -u main.py --interface wlan0mon --channel 4 --bssid FC:3F:FC:93:7F:B1
-```
-
-## Start the dashboard
+Start the dashboard:
 
 ```bash
 python3 web/app.py
 ```
 
-Open:
+Open `http://127.0.0.1:5000`.
 
-```text
-http://127.0.0.1:5000
-```
+## Example Lab Notes
 
-## Session behavior
+- If `airmon-ng` renames the long USB adapter name, use the real active monitor interface such as `wlan0mon`.
+- Use `--bssid FC:3F:FC:93:7F:B1` when you want to scope monitoring to the lab AP.
+- Use `CTRL+C` to stop the engine cleanly.
+- Do not use `CTRL+Z`; WaveSentinel blocks suspend behavior to avoid leaving stopped capture processes behind.
+
+## Session Behavior
 
 - `--reset-session`
   - Archives the current `data/` folder into `archive/session_TIMESTAMP.tar.gz`
   - Resets alerts, traffic logs, devices, status, and activity logs
 - `--reset-logs`
   - Alias for `--reset-session`
-- A PID lock file prevents multiple WIDS engines from running at the same time
-- `CTRL+C` is the supported stop path
-- `CTRL+Z` is intentionally ignored with a warning so you do not leave stopped engine processes behind
+- A PID lock prevents multiple WaveSentinel engines from running at the same time
 
-## Dashboard views
+## Dashboard Views
 
 ### Non-Technical View
 
-- Safe / Warning / Critical summary
-- Plain-language explanations
+- Safe / Warning / Critical summary cards
+- Plain-language findings
+- Suggested operator actions
 - Simple definitions for AP, client, packet, beacon, and deauth
-- Recommended next actions
 
 ### Technical Analyst View
 
 - Real capture interface and channel
-- AP and client inventory
+- Access point and client inventory
 - Alert feed with severity and MITRE mapping
 - Traffic logs table
 - Filters for severity, attack type, BSSID, ESSID, and channel
-- Export links for CSV and JSON artifacts
+- CSV and JSON exports for dashboard data
 
-## Notes on beacon flood tuning
+## Defensive Scope
 
-- Default beacon flood threshold is `300` beacons in `10` seconds
-- The detector now requires:
-  - `beacon_count >= threshold`
-  - `unique_ssids >= unique_ssids`
-- A single AP sending normal beacon traffic by itself should not trigger a HIGH beacon flood alert
-- The dashboard can still show a note that heavy beaconing from one SSID may be normal AP behavior
+WaveSentinel is detection-only.
 
-## Defensive scope
-
-This project is detection-only.
-
-- No deauth transmit automation
+- No deauthentication transmit automation
 - No `aireplay-ng` execution
 - No attack orchestration
 - Monitoring, logging, and visualization only

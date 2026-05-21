@@ -3,23 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wireless Intrusion Detection Dashboard</title>
+    <title>{{ payload.branding.full_title }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <div class="page-shell">
         <header class="hero">
             <div class="hero-copy">
-                <p class="eyebrow">Defensive Wireless IDS Dashboard</p>
-                <h1>Wireless Intrusion Detection System</h1>
-                <p>
-                    Real captured 802.11 traffic only. No demo mode, no attack automation, and no
-                    separate dashboard logic path.
-                </p>
+                <p class="eyebrow">{{ payload.branding.tool_name }}</p>
+                <h1>{{ payload.branding.dashboard_title }}</h1>
+                <p class="hero-subtitle">{{ payload.branding.dashboard_subtitle }}</p>
+                <p>{{ payload.branding.description }}</p>
             </div>
             <div class="hero-status">
                 <span id="status-pill" class="pill pill-idle">Idle</span>
-                <p id="status-message" class="status-message">Dashboard ready.</p>
+                <p id="status-message" class="status-message">WaveSentinel Dashboard ready.</p>
                 <div class="status-meta-grid">
                     <div>
                         <span class="status-label">Capture Interface</span>

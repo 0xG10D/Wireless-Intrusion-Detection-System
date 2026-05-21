@@ -23,7 +23,7 @@ NO_PACKET_WARNING_SECONDS = 15
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Real-time wireless IDS monitor for authorized lab environments.",
+        description="WaveSentinel WIDS real-time monitor for authorized lab environments.",
     )
     parser.add_argument(
         "--interface",
