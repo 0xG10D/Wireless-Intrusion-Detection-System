@@ -16,6 +16,7 @@ dist/
 *.cap
 *.log
 archive/
+runtime/
 data/*.json
 data/*.csv
 

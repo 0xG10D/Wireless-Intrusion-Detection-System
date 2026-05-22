@@ -106,6 +106,7 @@ class PacketCapture:
 
         if self.channel is not None:
             self._lock_channel(self.channel)
+            self._verify_channel_lock(self.channel)
 
     def sniff_live(
         self,
@@ -195,7 +196,8 @@ class PacketCapture:
             if available_monitor_names:
                 hint = (
                     f" Active monitor interface(s): {available_monitor_names}. "
-                    f"If airmon-ng renamed '{self.requested_interface}', use that monitor interface instead."
+                    f"If airmon-ng renamed '{self.requested_interface}', use that monitor interface instead. "
+                    "Long adapter names are often renamed to wlan0mon."
                 )
             raise PacketCaptureMonitorModeError(
                 f"Interface '{self.requested_interface}' is in {requested.mode or 'unknown'} mode, not monitor mode.{hint}"
@@ -205,7 +207,8 @@ class PacketCapture:
             resolved = monitor_interfaces[0]
             self.interface_resolution = (
                 f"Requested interface '{self.requested_interface}' was not found. "
-                f"Using active monitor interface '{resolved.name}' instead."
+                f"Using active monitor interface '{resolved.name}' instead. "
+                "airmon-ng may rename long adapter names to wlan0mon."
             )
             return resolved
 
@@ -221,11 +224,13 @@ class PacketCapture:
                 f"{item.name} ({item.mode or 'unknown'})" for item in interfaces
             )
             raise PacketCaptureInterfaceError(
-                f"Interface '{self.requested_interface}' was not found. Available interfaces: {available}."
+                f"Interface '{self.requested_interface}' was not found. Available interfaces: {available}. "
+                "airmon-ng may rename long adapter names to wlan0mon."
             )
 
         raise PacketCaptureInterfaceError(
-            f"Interface '{self.requested_interface}' was not found and no wireless interfaces were reported by iw."
+            f"Interface '{self.requested_interface}' was not found and no wireless interfaces were reported by iw. "
+            "Check the adapter, driver, and monitor-mode setup."
         )
 
     def _list_linux_interfaces(self) -> list[InterfaceInfo]:
@@ -306,6 +311,24 @@ class PacketCapture:
         raise PacketCaptureError(
             f"Failed to lock {self.interface} to channel {channel}. Check that the interface is monitor-mode capable."
         )
+
+    def _verify_channel_lock(self, channel: int) -> None:
+        refreshed = next(
+            (item for item in self._list_linux_interfaces() if item.name == self.interface),
+            None,
+        )
+        if refreshed is None:
+            return
+
+        self.interface_mode = refreshed.mode or self.interface_mode
+        if refreshed.channel:
+            self.current_channel = refreshed.channel
+
+        if refreshed.channel and refreshed.channel != str(channel):
+            raise PacketCaptureError(
+                f"Interface '{self.interface}' is on channel {refreshed.channel} after requesting channel {channel}. "
+                "Re-check monitor mode and channel lock."
+            )
 
     @staticmethod
     def _run_command(command: list[str]) -> subprocess.CompletedProcess[str] | None:

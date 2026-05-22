@@ -71,6 +71,7 @@ class MonitorLogger:
     def default_status() -> dict[str, Any]:
         return {
             "running": False,
+            "state": "Stopped",
             "mode": "live",
             "pid": None,
             "requested_interface": "",
@@ -102,7 +103,7 @@ class MonitorLogger:
             },
             "advisories": [],
             "troubleshooting": [],
-            "message": "Dashboard ready. Start live monitoring with main.py.",
+            "message": "WaveSentinel ready. Start live monitoring with main.py.",
             "error": "",
         }
 

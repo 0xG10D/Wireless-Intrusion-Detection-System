@@ -19,6 +19,10 @@ from src.session_manager import SessionLockError, SessionManager
 
 
 NO_PACKET_WARNING_SECONDS = 15
+NO_PACKET_WARNING_MESSAGE = (
+    "No packets captured. Check monitor mode, channel, adapter driver, or interface name."
+)
+SAFE_STOP_MESSAGE = "Monitoring stopped safely."
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -116,6 +120,7 @@ def run_monitor(args: argparse.Namespace) -> int:
     )
 
     current_message = "Validating capture interface."
+    current_state = "Starting"
     current_error = ""
     exit_code = 0
     session_running = False
@@ -131,15 +136,20 @@ def run_monitor(args: argparse.Namespace) -> int:
         print(message, flush=True)
 
     def handle_stop_signal(message: str) -> None:
-        nonlocal current_message, stop_reason
-        current_message = message
-        stop_reason = message
+        nonlocal current_message, current_state, stop_reason
+        current_message = SAFE_STOP_MESSAGE
+        current_state = "Stopping"
+        stop_reason = SAFE_STOP_MESSAGE
+        logger.append_activity(message, level="WARN")
         print(message, flush=True)
 
     def handle_suspend_signal(message: str) -> None:
-        nonlocal current_message
-        current_message = message
-        log_once(message, level="WARN")
+        nonlocal current_message, current_state, stop_reason
+        current_message = SAFE_STOP_MESSAGE
+        current_state = "Stopping"
+        stop_reason = SAFE_STOP_MESSAGE
+        logger.append_activity(message, level="WARN")
+        print(message, flush=True)
 
     session_manager.install_signal_handlers(
         on_stop=handle_stop_signal,
@@ -159,11 +169,12 @@ def run_monitor(args: argparse.Namespace) -> int:
         troubleshooting: list[str] = []
         if session_running and snapshot["packet_count"] == 0 and capture_started_at:
             if now - capture_started_at >= NO_PACKET_WARNING_SECONDS:
-                warning = "No packets captured. Check monitor mode, channel, or driver."
+                warning = NO_PACKET_WARNING_MESSAGE
                 troubleshooting = [
                     warning,
-                    f"Confirm the active capture interface is {capture.interface}.",
+                    f"WaveSentinel requested '{args.interface}' and is currently using '{capture.interface}'.",
                     "Verify the adapter is in monitor mode and locked to the expected channel.",
+                    "airmon-ng may rename long adapter names to wlan0mon.",
                 ]
                 if not no_packet_warning_logged:
                     logger.append_activity(warning, level="WARN")
@@ -201,6 +212,7 @@ def run_monitor(args: argparse.Namespace) -> int:
             troubleshooting=troubleshooting,
             last_update=datetime.now().astimezone().isoformat(timespec="seconds"),
             message=current_message,
+            state=current_state,
             error=current_error,
         )
         last_flush = now
@@ -222,7 +234,7 @@ def run_monitor(args: argparse.Namespace) -> int:
                     f"{alert['attack_type']}: {alert['details']}",
                     level=str(alert["severity"]),
                 )
-        elif detector.packet_count == 1:
+        elif detector.packet_count == 1 or current_message == NO_PACKET_WARNING_MESSAGE:
             current_message = f"Live monitoring active on {capture.interface}."
 
         flush_runtime_state()
@@ -241,6 +253,7 @@ def run_monitor(args: argparse.Namespace) -> int:
         session_started_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
         capture_started_at = time.monotonic()
         session_running = True
+        current_state = "Running"
         current_message = f"Live monitoring active on {capture.interface}."
         if args.channel:
             current_message = (
@@ -254,13 +267,13 @@ def run_monitor(args: argparse.Namespace) -> int:
             should_stop=lambda: session_manager.stop_requested,
         )
 
-        if stop_reason:
-            current_message = stop_reason
-        elif not current_error:
-            current_message = "Monitoring stopped."
+        if not current_error:
+            current_message = stop_reason or SAFE_STOP_MESSAGE
 
     except KeyboardInterrupt:
-        current_message = stop_reason or "Monitoring stopped by the operator."
+        current_message = SAFE_STOP_MESSAGE
+        current_state = "Stopped"
+        stop_reason = SAFE_STOP_MESSAGE
     except (
         PacketCapturePermissionError,
         PacketCaptureInterfaceError,
@@ -270,18 +283,23 @@ def run_monitor(args: argparse.Namespace) -> int:
         ValueError,
     ) as exc:
         current_error = str(exc)
+        current_state = "Error"
         current_message = "Monitoring stopped due to a capture or configuration error."
         exit_code = 1
         logger.append_activity(current_error, level="ERROR")
         print(current_error, file=sys.stderr, flush=True)
     except Exception as exc:  # pragma: no cover - safety net for runtime failures
         current_error = f"Unexpected WIDS engine error: {exc}"
+        current_state = "Error"
         current_message = "Monitoring stopped due to an unexpected runtime error."
         exit_code = 1
         logger.append_activity(current_error, level="ERROR")
         print(current_error, file=sys.stderr, flush=True)
     finally:
         session_running = False
+        if current_state != "Error":
+            current_state = "Stopped"
+            current_message = stop_reason or SAFE_STOP_MESSAGE
         flush_runtime_state(force=True)
         session_manager.release()
 

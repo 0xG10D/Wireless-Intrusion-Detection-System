@@ -65,8 +65,9 @@ black --check main.py src web/app.py
 Example lab workflow:
 
 ```bash
-sudo airmon-ng start wlx6c1ff7d85510 4
-sudo ../venv/bin/python3 -u main.py --interface wlan0mon --channel 4 --reset-session
+sudo airmon-ng start wlan0
+sudo iw dev wlan0mon set channel 4
+sudo ./venv/bin/python3 -u main.py --interface wlan0mon --channel 4 --reset-session
 python3 web/app.py
 ```
 

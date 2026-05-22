@@ -36,8 +36,8 @@
         </header>
 
         <section class="view-switch">
-            <button id="show-summary" class="view-button active" type="button">Non-Technical View</button>
-            <button id="show-technical" class="view-button" type="button">Technical Analyst View</button>
+            <button id="show-summary" class="view-button active" type="button">Simple View</button>
+            <button id="show-technical" class="view-button" type="button">Analyst View</button>
         </section>
 
         <section id="summary-view" class="dashboard-view">
@@ -169,6 +169,10 @@
                         <h2>Engine Status</h2>
                     </div>
                     <div class="status-grid">
+                        <div>
+                            <span class="status-label">State</span>
+                            <strong id="engine-state">-</strong>
+                        </div>
                         <div>
                             <span class="status-label">PID</span>
                             <strong id="engine-pid">-</strong>
@@ -663,9 +667,10 @@
             const clients = devices.clients || [];
 
             const running = Boolean(status.running);
+            const state = String(status.state || (running ? "Running" : "Stopped"));
             const statusPill = document.getElementById("status-pill");
             if (statusPill) {
-                statusPill.textContent = running ? "Live Monitoring" : "Idle";
+                statusPill.textContent = running ? "Live Monitoring" : state;
                 statusPill.className = `pill ${running ? "pill-active" : "pill-idle"}`;
             }
 
@@ -698,6 +703,7 @@
             setText("counter-beacon", (status.frame_counters || {}).beacon || 0);
             setText("counter-probe", (status.frame_counters || {}).probe || 0);
 
+            setText("engine-state", state);
             setText("engine-pid", status.pid || "-");
             setText("engine-requested-interface", status.requested_interface || "-");
             setText("engine-interface", status.interface || "-");
@@ -795,7 +801,7 @@
 
         updateDashboard(initialPayload);
         setView("summary");
-        window.setInterval(refreshDashboard, 5000);
+        window.setInterval(refreshDashboard, 10000);
     </script>
 </body>
 </html>

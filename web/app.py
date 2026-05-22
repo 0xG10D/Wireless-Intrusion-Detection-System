@@ -47,6 +47,7 @@ app.json.sort_keys = False
 def default_status() -> dict[str, Any]:
     return {
         "running": False,
+        "state": "Stopped",
         "mode": "live",
         "pid": None,
         "requested_interface": "",
@@ -78,7 +79,7 @@ def default_status() -> dict[str, Any]:
         "advisories": [],
         "troubleshooting": [],
         "last_update": "",
-        "message": "WaveSentinel Dashboard ready. Start live monitoring with main.py.",
+        "message": "WaveSentinel ready. Start live monitoring with main.py.",
         "error": "",
     }
 
@@ -214,6 +215,7 @@ def normalize_status_payload(payload: Any) -> dict[str, Any]:
         source["client_count"] = source["device_count"]
 
     for key in (
+        "state",
         "mode",
         "requested_interface",
         "interface",
@@ -232,6 +234,8 @@ def normalize_status_payload(payload: Any) -> dict[str, Any]:
             normalized[key] = normalize_text(source.get(key))
 
     normalized["running"] = bool(source.get("running", normalized["running"]))
+    if not normalized["state"]:
+        normalized["state"] = "Running" if normalized["running"] else "Stopped"
     normalized["pid"] = source.get("pid")
     normalized["packet_count"] = safe_int(source.get("packet_count"))
     normalized["alert_count"] = safe_int(source.get("alert_count"))
@@ -356,17 +360,13 @@ def normalize_alert_rows(payload: Any) -> list[dict[str, Any]]:
 
 def normalize_traffic_record(payload: Any) -> dict[str, Any]:
     source = sanitize_mapping(payload)
-    frame_type = normalize_text(
-        source.get("frame_type") or source.get("wireless_subtype") or source.get("protocol")
-    ) or "Unknown"
-    frame_subtype = normalize_text(
-        source.get("frame_subtype") or source.get("wireless_subtype") or frame_type
-    ) or frame_type
+    frame_type = normalize_text(source.get("frame_type") or source.get("frame_class")) or "Unknown"
+    frame_subtype = normalize_text(source.get("frame_subtype") or source.get("wireless_subtype")) or frame_type
     return {
         "timestamp": normalize_text(source.get("timestamp")),
         "frame_type": frame_type,
         "frame_subtype": frame_subtype,
-        "bssid": normalize_mac(source.get("bssid") or source.get("src_mac")),
+        "bssid": normalize_mac(source.get("bssid")),
         "essid": normalize_text(source.get("essid")),
         "source": normalize_text(source.get("source") or source.get("src_ip") or source.get("src_mac")),
         "destination": normalize_text(source.get("destination") or source.get("dst_ip") or source.get("dst_mac")),
@@ -567,9 +567,9 @@ def build_summary_view(
 
     explanations = [
         (
-            f"Your Wi-Fi monitor is running on {status['interface']}."
+            "Monitoring is running."
             if status["running"]
-            else "Your Wi-Fi monitor is not running."
+            else "Monitoring is not running."
         ),
         (
             "No deauthentication attack detected."
@@ -578,9 +578,9 @@ def build_summary_view(
         ),
     ]
     if "Open Network Detected" in attack_types:
-        explanations.append("Open network detected nearby.")
+        explanations.append("Open Wi-Fi network detected nearby.")
     if any("Beacon flood alert may be normal" in item for item in advisories):
-        explanations.append("Beacon flood alert may be normal if it comes from one SSID.")
+        explanations.append("Beacon activity may be normal if it comes from one network.")
     if status["troubleshooting"]:
         explanations.append(status["troubleshooting"][0])
     if status["interface_resolution"]:
